@@ -51,6 +51,7 @@ impl BetterStackWriter {
             flush_interval: Duration::from_secs(5),
             handle: None,
             batch_size: 128,
+            gzip: cfg!(feature = "gzip"),
         }
     }
 
@@ -61,6 +62,7 @@ impl BetterStackWriter {
         flush_interval: Duration,
         batch_size: usize,
         is_lossy: bool,
+        use_gzip: bool,
         handle: Option<tokio::runtime::Handle>,
     ) -> (BetterStackWriter, WorkerGuard) {
         let (sender, receiver) = flume::bounded(buffered_lines_limit);
@@ -90,6 +92,7 @@ impl BetterStackWriter {
             shutdown_receiver,
             flush_interval,
             batch_size,
+            use_gzip,
             handle,
         );
         let worker_guard =
@@ -119,6 +122,7 @@ pub struct BetterStackBuilder {
     flush_interval: Duration,
     batch_size: usize,
     handle: Option<tokio::runtime::Handle>,
+    gzip: bool,
 }
 
 impl BetterStackBuilder {
@@ -147,6 +151,12 @@ impl BetterStackBuilder {
         self
     }
 
+    #[cfg(feature = "gzip")]
+    pub fn gzip(mut self, use_gzip: bool) -> Self {
+        self.gzip = use_gzip;
+        self
+    }
+
     pub fn finish(self) -> (BetterStackWriter, WorkerGuard) {
         BetterStackWriter::create(
             self.ingestion_url,
@@ -155,6 +165,7 @@ impl BetterStackBuilder {
             self.flush_interval,
             self.batch_size,
             self.is_lossy,
+            self.gzip,
             self.handle,
         )
     }
@@ -290,6 +301,7 @@ mod worker {
         batch_size: usize,
         last_flush: Instant,
         flush_interval: Duration,
+        use_gzip: bool,
         handle: Option<tokio::runtime::Handle>,
     }
 
@@ -310,6 +322,7 @@ mod worker {
             shutdown: Receiver<()>,
             flush_interval: Duration,
             batch_size: usize,
+            use_gzip: bool,
             handle: Option<tokio::runtime::Handle>,
         ) -> Worker {
             Self {
@@ -321,6 +334,7 @@ mod worker {
                 buffer: vec![],
                 last_flush: Instant::now(),
                 flush_interval,
+                use_gzip,
                 handle,
             }
         }
@@ -442,24 +456,49 @@ mod worker {
         }
 
         async fn flush(&mut self, force: bool) -> reqwest::Result<()> {
-            if self.buffer_datasize() == 0 {
+            let content_length = self.buffer_datasize();
+            if content_length == 0 {
                 return Ok(());
             }
             if self.buffer.len() > self.batch_size
                 || self.last_flush.elapsed() < self.flush_interval
                 || force
             {
-                let body = reqwest::Body::wrap_stream(futures::stream::iter(
-                    self.buffer
-                        .clone()
-                        .into_iter()
-                        .map(|b| Ok::<_, std::convert::Infallible>(b)),
-                ));
+                let req = self.client.post(&self.ingestion_url);
 
-                self.client
-                    .post(&self.ingestion_url)
-                    .body(body)
-                    .send()
+                let req = if self.use_gzip && cfg!(feature = "gzip") {
+                    #[cfg(feature = "gzip")]
+                    {
+                        use tokio_util::io::StreamReader;
+
+                        let stream_reader = StreamReader::new(futures::stream::iter(
+                            self.buffer
+                                .clone()
+                                .into_iter()
+                                .map(|buf| Ok::<_, tokio::io::Error>(buf)),
+                        ));
+                        let compressed_reader =
+                            async_compression::tokio::bufread::GzipEncoder::new(stream_reader);
+                        let stream = tokio_util::io::ReaderStream::new(compressed_reader);
+                        let body = reqwest::Body::wrap_stream(stream);
+
+                        req.body(body)
+                    }
+                    #[cfg(not(feature = "gzip"))]
+                    unreachable!()
+                } else {
+                    let body = reqwest::Body::wrap_stream(futures::stream::iter(
+                        self.buffer
+                            .clone()
+                            .into_iter()
+                            .map(|b| Ok::<_, std::convert::Infallible>(b)),
+                    ));
+
+                    req.header(reqwest::header::CONTENT_LENGTH, content_length.to_string())
+                        .body(body)
+                };
+
+                req.send()
                     .and_then(|resp| async move { resp.error_for_status() })
                     .await?;
 
