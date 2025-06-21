@@ -26,7 +26,10 @@ To rename the `timestamp` field to `dt` you will need to access the Json Layer.
 
 ```rust
 let json = {
-    let mut layer = json_subscriber::layer().without_time().flatten_event(true);
+    let mut layer = json_subscriber::layer()
+        .without_time()
+        .flatten_event(true)
+        .with_writer(betterstack);
     layer.inner_layer_mut()
         .with_timer("dt", tracing_subscriber::fmt::time::SystemTime);
     layer
