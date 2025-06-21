@@ -482,7 +482,8 @@ mod worker {
                         let stream = tokio_util::io::ReaderStream::new(compressed_reader);
                         let body = reqwest::Body::wrap_stream(stream);
 
-                        req.body(body)
+                        req.header(reqwest::header::CONTENT_ENCODING, "gzip")
+                            .body(body)
                     }
                     #[cfg(not(feature = "gzip"))]
                     unreachable!()
