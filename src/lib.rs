@@ -401,7 +401,7 @@ mod worker {
             while matches!(worker_state, WorkerState::Continue) {
                 let try_recv_result = self.receiver.try_recv();
                 let handle_result = self.handle_try_recv(try_recv_result);
-                if self.last_flush.elapsed() < self.flush_interval && self.any_buffer_datasize() {
+                if self.last_flush.elapsed() > self.flush_interval && self.any_buffer_datasize() {
                     self.flush(false).await?;
                 }
                 worker_state = handle_result?;
@@ -461,7 +461,7 @@ mod worker {
                 return Ok(());
             }
             if self.buffer.len() > self.batch_size
-                || self.last_flush.elapsed() < self.flush_interval
+                || self.last_flush.elapsed() > self.flush_interval
                 || force
             {
                 let req = self.client.post(&self.ingestion_url);
