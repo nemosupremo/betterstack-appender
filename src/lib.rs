@@ -381,7 +381,7 @@ mod worker {
         pub(crate) async fn work(&mut self) -> reqwest::Result<WorkerState> {
             // Worker thread yields here if receive buffer is empty
             let msg = loop {
-                let f = if self.any_buffer_datasize() {
+                let f = if !self.any_buffer_datasize() {
                     self.receiver.recv_async().map(|m| Ok(m)).left_future()
                 } else {
                     tokio::time::timeout_at(
